@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.repositories.source_repository import SourceRepository
+from src.services.ingestion.localch_ingestion import LocalChIngestionService
 from src.services.ingestion.zefix_ingestion import ZefixIngestionService
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,17 @@ async def trigger_zefix_ingestion(
     service = ZefixIngestionService(db)
     job_id = await service.ingest()
     return IngestionTriggerResponse(message="Zefix ingestion completed", job_id=job_id)
+
+
+@router.post("/localch", response_model=IngestionTriggerResponse)
+async def trigger_localch_ingestion(
+    enrich_details: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger a local.ch ingestion job. Set enrich_details=true to also scrape detail pages (slower)."""
+    service = LocalChIngestionService(db)
+    job_id = await service.ingest(enrich_details=enrich_details)
+    return IngestionTriggerResponse(message="local.ch ingestion completed", job_id=job_id)
 
 
 @router.get("/jobs", response_model=list[IngestionJobOut])
