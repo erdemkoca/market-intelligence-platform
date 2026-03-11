@@ -24,6 +24,8 @@ class CompanyRepository:
         status: str | None = None,
         size_class: str | None = None,
         q: str | None = None,
+        has_email: bool | None = None,
+        has_phone: bool | None = None,
     ) -> tuple[list[MiCompany], int]:
         query = select(MiCompany)
         count_query = select(func.count(MiCompany.id))
@@ -52,6 +54,22 @@ class CompanyRepository:
         if q:
             query = query.where(MiCompany.name.ilike(f"%{q}%"))
             count_query = count_query.where(MiCompany.name.ilike(f"%{q}%"))
+        if has_email is not None or has_phone is not None:
+            enrichment_join = MiEnrichment.company_id == MiCompany.id
+            query = query.join(MiEnrichment, enrichment_join)
+            count_query = count_query.join(MiEnrichment, enrichment_join)
+            if has_email is True:
+                query = query.where(MiEnrichment.email_general.isnot(None), MiEnrichment.email_general != "")
+                count_query = count_query.where(MiEnrichment.email_general.isnot(None), MiEnrichment.email_general != "")
+            elif has_email is False:
+                query = query.where((MiEnrichment.email_general.is_(None)) | (MiEnrichment.email_general == ""))
+                count_query = count_query.where((MiEnrichment.email_general.is_(None)) | (MiEnrichment.email_general == ""))
+            if has_phone is True:
+                query = query.where(MiEnrichment.phone.isnot(None), MiEnrichment.phone != "")
+                count_query = count_query.where(MiEnrichment.phone.isnot(None), MiEnrichment.phone != "")
+            elif has_phone is False:
+                query = query.where((MiEnrichment.phone.is_(None)) | (MiEnrichment.phone == ""))
+                count_query = count_query.where((MiEnrichment.phone.is_(None)) | (MiEnrichment.phone == ""))
 
         total = (await self.session.execute(count_query)).scalar() or 0
 

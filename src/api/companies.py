@@ -19,6 +19,8 @@ async def list_companies(
     status: str | None = None,
     size_class: str | None = None,
     q: str | None = None,
+    has_email: bool | None = None,
+    has_phone: bool | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     repo = CompanyRepository(db)
@@ -32,6 +34,8 @@ async def list_companies(
         status=status,
         size_class=size_class,
         q=q,
+        has_email=has_email,
+        has_phone=has_phone,
     )
 
     items = []
