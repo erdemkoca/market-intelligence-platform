@@ -17,16 +17,16 @@ logger = logging.getLogger(__name__)
 
 async def run_zefix_ingestion():
     """Daily Zefix ingestion job."""
-    logger.info("Starting scheduled Zefix ingestion...")
+    logger.info("Starting scheduled LINDAS/Zefix ingestion...")
     async with async_session() as session:
         try:
             service = ZefixIngestionService(session)
             job_id = await service.ingest()
             await session.commit()
-            logger.info(f"Scheduled Zefix ingestion completed: {job_id}")
+            logger.info(f"Scheduled LINDAS/Zefix ingestion completed: {job_id}")
         except Exception as e:
             await session.rollback()
-            logger.error(f"Scheduled Zefix ingestion failed: {e}", exc_info=True)
+            logger.error(f"Scheduled LINDAS/Zefix ingestion failed: {e}", exc_info=True)
 
 
 async def run_lead_scoring():
@@ -53,7 +53,7 @@ def main():
     scheduler.add_job(run_lead_scoring, "cron", hour=8, minute=0, id="scoring_daily")
 
     scheduler.start()
-    logger.info("Scheduler started. Jobs: zefix_daily (05:00), scoring_daily (08:00)")
+    logger.info("Scheduler started. Jobs: lindas_zefix_daily (05:00), scoring_daily (08:00)")
 
     try:
         asyncio.get_event_loop().run_forever()

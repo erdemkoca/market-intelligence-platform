@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.company import MiCompany, MiCompanyIdentifier, MiCompanyLocation
 from src.models.source import MiIngestionJob, MiSourceRecord
 from src.services.classification.industry_classifier import IndustryClassifier
-from src.services.ingestion.zefix_client import ZefixClient
+from src.services.ingestion.zefix_client import ZefixClient, ZefixCompanyResult
 
 logger = logging.getLogger(__name__)
 
@@ -20,19 +20,37 @@ class ZefixIngestionService:
         self.classifier = IndustryClassifier()
 
     async def ingest(self) -> str:
-        """Run a full Zefix ingestion for target trades. Returns job ID."""
-        job_id = f"zefix-{date.today()}-{uuid.uuid4().hex[:8]}"
-        job = MiIngestionJob(id=job_id, source_type="ZEFIX", status="RUNNING")
+        """Run a full LINDAS/Zefix ingestion for target trades. Returns job ID."""
+        job_id = f"lindas-{date.today()}-{uuid.uuid4().hex[:8]}"
+        job = MiIngestionJob(id=job_id, source_type="LINDAS_ZEFIX", status="RUNNING")
         self.session.add(job)
         await self.session.flush()
 
         try:
-            raw_companies = await self.client.search_all_trades()
-            job.records_fetched = len(raw_companies)
-            logger.info(f"Job {job_id}: fetched {len(raw_companies)} companies from Zefix")
+            # Step 1: Fetch all trade companies from LINDAS
+            companies = await self.client.fetch_trade_companies()
+            job.records_fetched = len(companies)
+            logger.info(f"Job {job_id}: fetched {len(companies)} companies from LINDAS")
 
-            for raw in raw_companies:
-                await self._process_company(raw, job_id, job)
+            # Step 2: Fetch addresses in batch
+            company_uris = [
+                c.raw.get("company_uri") for c in companies
+                if c.raw.get("company_uri")
+            ]
+            addresses = await self.client.fetch_addresses_batch(company_uris)
+            logger.info(f"Job {job_id}: fetched {len(addresses)} addresses")
+
+            # Step 3: Attach addresses to companies
+            for company in companies:
+                uri = company.raw.get("company_uri")
+                if uri and uri in addresses:
+                    addr = addresses[uri]
+                    company.address = addr
+                    company.canton = addr.get("canton")
+
+            # Step 4: Process each company
+            for company in companies:
+                await self._process_company(company, job_id, job)
 
             job.status = "COMPLETED"
             job.completed_at = datetime.utcnow()
@@ -51,88 +69,97 @@ class ZefixIngestionService:
 
         return job_id
 
-    async def _process_company(self, raw: dict, job_id: str, job: MiIngestionJob):
-        parsed = self.client.parse_company(raw)
-
-        if not parsed.uid:
+    async def _process_company(self, parsed: ZefixCompanyResult, job_id: str, job: MiIngestionJob):
+        # Need at least a UID or zefix_id for dedup
+        dedup_key = parsed.uid or parsed.zefix_id
+        if not dedup_key:
             job.records_skipped += 1
             return
 
-        # Check if company already exists by UID
-        result = await self.session.execute(
-            select(MiCompany).where(MiCompany.uid == parsed.uid)
-        )
-        existing = result.scalar_one_or_none()
+        # Check if company already exists by UID (preferred) or zefix_id
+        existing = None
+        if parsed.uid:
+            result = await self.session.execute(
+                select(MiCompany).where(MiCompany.uid == parsed.uid)
+            )
+            existing = result.scalar_one_or_none()
 
         if existing:
             self._update_company(existing, parsed)
+            company_id = existing.id
             job.records_updated += 1
         else:
             company = self._create_company(parsed)
             self.session.add(company)
             await self.session.flush()
+            company_id = company.id
 
             # Add identifiers
             if parsed.uid:
                 self.session.add(MiCompanyIdentifier(
-                    company_id=company.id,
+                    company_id=company_id,
                     identifier_type="UID",
                     identifier_value=parsed.uid,
                 ))
             if parsed.chid:
                 self.session.add(MiCompanyIdentifier(
-                    company_id=company.id,
-                    identifier_type="ZEFIX_ID",
+                    company_id=company_id,
+                    identifier_type="CHID",
                     identifier_value=parsed.chid,
+                ))
+            if parsed.zefix_id:
+                self.session.add(MiCompanyIdentifier(
+                    company_id=company_id,
+                    identifier_type="ZEFIX_ID",
+                    identifier_value=parsed.zefix_id,
                 ))
 
             # Add location
-            if parsed.address or parsed.legal_seat:
-                address = parsed.address or {}
+            if parsed.address:
                 self.session.add(MiCompanyLocation(
-                    company_id=company.id,
+                    company_id=company_id,
                     location_type="HQ",
-                    street=address.get("street"),
-                    zip_code=address.get("swissZipCode") or address.get("zipCode"),
-                    city=address.get("city") or parsed.legal_seat,
-                    canton=parsed.canton,
+                    street=parsed.address.get("street"),
+                    zip_code=parsed.address.get("zip_code"),
+                    city=parsed.address.get("city"),
+                    canton=parsed.address.get("canton"),
                 ))
 
             job.records_created += 1
 
-        # Always store source record
+        # Store source record
         self.session.add(MiSourceRecord(
-            company_id=existing.id if existing else company.id,
-            source_type="ZEFIX",
-            source_url=f"https://www.zefix.admin.ch/ZefixREST/api/v1/company/uid/{parsed.uid}",
+            company_id=company_id,
+            source_type="LINDAS_ZEFIX",
+            source_url=parsed.raw.get("company_uri"),
             raw_data=parsed.raw,
             ingestion_job_id=job_id,
         ))
 
-    def _create_company(self, parsed) -> MiCompany:
-        classification = self.classifier.classify(parsed.name, parsed.raw.get("purpose"))
+    def _create_company(self, parsed: ZefixCompanyResult) -> MiCompany:
+        classification = self.classifier.classify(parsed.name, parsed.purpose)
+        canton = parsed.canton or (parsed.address.get("canton") if parsed.address else None)
         return MiCompany(
             name=parsed.name,
             legal_name=parsed.name,
             uid=parsed.uid,
             legal_form=parsed.legal_form,
-            status=parsed.status or "ACTIVE",
+            status="ACTIVE",
             purpose=parsed.purpose,
             noga_code=classification.noga_code,
             industry=classification.industry,
             industry_detail=classification.industry_detail,
-            language_region=self._detect_language_region(parsed.canton),
+            language_region=self._detect_language_region(canton),
         )
 
-    def _update_company(self, company: MiCompany, parsed):
+    def _update_company(self, company: MiCompany, parsed: ZefixCompanyResult):
         company.name = parsed.name
         company.legal_form = parsed.legal_form or company.legal_form
-        company.status = parsed.status or company.status
         company.purpose = parsed.purpose or company.purpose
         company.updated_at = datetime.utcnow()
 
         if not company.industry:
-            classification = self.classifier.classify(parsed.name, parsed.raw.get("purpose"))
+            classification = self.classifier.classify(parsed.name, parsed.purpose)
             company.noga_code = classification.noga_code
             company.industry = classification.industry
             company.industry_detail = classification.industry_detail
@@ -149,5 +176,5 @@ class ZefixIngestionService:
         if canton.upper() in italian:
             return "it"
         if canton.upper() in bilingual_fr:
-            return "de"  # default to German for bilingual
+            return "de"
         return "de"

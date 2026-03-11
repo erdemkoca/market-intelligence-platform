@@ -11,8 +11,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    zefix_base_url: str = "https://www.zefix.admin.ch/ZefixREST/api/v1"
-    zefix_request_delay: float = 1.0  # seconds between requests
+    # LINDAS SPARQL endpoint (official Swiss Linked Data)
+    lindas_sparql_url: str = "https://lindas.admin.ch/query"
+    lindas_request_delay: float = 0.5  # seconds between batch requests
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
