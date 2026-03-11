@@ -34,7 +34,7 @@ class LocalChClient:
 
     BASE_URL = "https://www.local.ch"
 
-    def __init__(self, delay: float = 2.0, max_pages_per_term: int = 50):
+    def __init__(self, delay: float = 2.0, max_pages_per_term: int = 30):
         self.delay = delay
         self.max_pages_per_term = max_pages_per_term
         self._client: httpx.AsyncClient | None = None
