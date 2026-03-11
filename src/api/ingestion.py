@@ -156,7 +156,7 @@ async def upload_searchch_data(
             job.records_created += 1
 
         # Upsert enrichment
-        if c.get("phone") or c.get("website"):
+        if c.get("phone") or c.get("website") or c.get("email"):
             from sqlalchemy import select
             result = await db.execute(
                 select(MiEnrichment).where(MiEnrichment.company_id == company_id)
@@ -167,10 +167,13 @@ async def upload_searchch_data(
                     enrichment.phone = c["phone"]
                 if not enrichment.website and c.get("website"):
                     enrichment.website = c["website"]
+                if not enrichment.email_general and c.get("email"):
+                    enrichment.email_general = c["email"]
             else:
                 db.add(MiEnrichment(
                     company_id=company_id,
                     phone=c.get("phone"), website=c.get("website"),
+                    email_general=c.get("email"),
                     enrichment_source="SEARCH_CH",
                     last_enriched_at=datetime.utcnow(),
                 ))
