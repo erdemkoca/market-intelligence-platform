@@ -44,7 +44,9 @@ class LeadRepository:
         total = (await self.session.execute(count_query)).scalar() or 0
 
         query = (
-            query.options(selectinload(LeadAccount.company))
+            query.options(
+                selectinload(LeadAccount.company).selectinload(MiCompany.locations),
+            )
             .order_by(LeadAccount.lead_score.desc())
             .offset(offset)
             .limit(limit)
@@ -56,7 +58,7 @@ class LeadRepository:
         result = await self.session.execute(
             select(LeadAccount)
             .options(
-                selectinload(LeadAccount.company),
+                selectinload(LeadAccount.company).selectinload(MiCompany.locations),
                 selectinload(LeadAccount.interactions),
             )
             .where(LeadAccount.id == lead_id)

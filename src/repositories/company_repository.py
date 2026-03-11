@@ -55,7 +55,9 @@ class CompanyRepository:
 
         total = (await self.session.execute(count_query)).scalar() or 0
 
-        query = query.order_by(MiCompany.name).offset(offset).limit(limit)
+        query = query.options(
+            selectinload(MiCompany.locations),
+        ).order_by(MiCompany.name).offset(offset).limit(limit)
         result = await self.session.execute(query)
         return list(result.scalars().all()), total
 
