@@ -31,10 +31,12 @@ class SearchChClient:
 
     BASE_URL = "https://www.search.ch/tel/"
 
-    def __init__(self, delay: float = 1.5, max_results_per_term: int = 750):
+    def __init__(self, delay: float = 3.0, max_results_per_term: int = 750):
         self.delay = delay
         self.max_results_per_term = max_results_per_term
         self._client: httpx.AsyncClient | None = None
+        self._retry_delay = 30.0
+        self._max_retries = 3
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -88,34 +90,53 @@ class SearchChClient:
 
         while pos <= self.max_results_per_term:
             url = f"{self.BASE_URL}?q={term}&pos={pos}"
-            try:
-                client = await self._get_client()
-                response = await client.get(url)
+            success = False
 
-                if response.status_code == 404:
+            for retry in range(self._max_retries):
+                try:
+                    client = await self._get_client()
+                    response = await client.get(url)
+
+                    if response.status_code == 429:
+                        wait = self._retry_delay * (retry + 1)
+                        logger.warning(f"search.ch: rate limited, waiting {wait}s (retry {retry + 1})")
+                        await asyncio.sleep(wait)
+                        continue
+
+                    if response.status_code == 404:
+                        return companies
+                    response.raise_for_status()
+
+                    html = response.text
+                    page_companies = self._parse_search_page(html, url)
+
+                    if not page_companies:
+                        return companies
+
+                    companies.extend(page_companies)
+                    success = True
+
+                    if len(companies) % 100 < RESULTS_PER_PAGE:
+                        logger.info(f"search.ch: '{term}' pos={pos}: {len(companies)} total")
+
                     break
-                response.raise_for_status()
 
-                html = response.text
-                page_companies = self._parse_search_page(html, url)
+                except httpx.HTTPStatusError as e:
+                    logger.warning(f"search.ch: HTTP {e.response.status_code} at pos={pos} for '{term}'")
+                    if e.response.status_code == 429:
+                        await asyncio.sleep(self._retry_delay * (retry + 1))
+                        continue
+                    return companies
+                except httpx.RequestError as e:
+                    logger.warning(f"search.ch: request error at pos={pos} for '{term}': {e}")
+                    return companies
 
-                if not page_companies:
-                    break
+            if not success:
+                logger.warning(f"search.ch: giving up on pos={pos} for '{term}' after {self._max_retries} retries")
+                return companies
 
-                companies.extend(page_companies)
-
-                if len(companies) % 100 < RESULTS_PER_PAGE:
-                    logger.info(f"search.ch: '{term}' pos={pos}: {len(companies)} total")
-
-                await asyncio.sleep(self.delay)
-                pos += RESULTS_PER_PAGE
-
-            except httpx.HTTPStatusError as e:
-                logger.warning(f"search.ch: HTTP {e.response.status_code} at pos={pos} for '{term}'")
-                break
-            except httpx.RequestError as e:
-                logger.warning(f"search.ch: request error at pos={pos} for '{term}': {e}")
-                break
+            await asyncio.sleep(self.delay)
+            pos += RESULTS_PER_PAGE
 
         return companies
 

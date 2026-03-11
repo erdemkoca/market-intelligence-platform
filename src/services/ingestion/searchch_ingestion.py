@@ -20,7 +20,7 @@ class SearchChIngestionService:
 
     def __init__(self, session: AsyncSession):
         self.session = session
-        self.client = SearchChClient(delay=1.5, max_results_per_term=750)
+        self.client = SearchChClient(delay=3.0, max_results_per_term=750)
         self.dedup = DeduplicationService(session)
         self.classifier = IndustryClassifier()
 
