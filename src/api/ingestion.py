@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.repositories.source_repository import SourceRepository
+from src.services.enrichment.website_scraper import WebsiteScraper
 from src.services.ingestion.localch_ingestion import LocalChIngestionService
+from src.services.ingestion.searchch_ingestion import SearchChIngestionService
 from src.services.ingestion.zefix_ingestion import ZefixIngestionService
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,30 @@ async def trigger_localch_ingestion(
     service = LocalChIngestionService(db)
     job_id = await service.ingest(enrich_details=enrich_details)
     return IngestionTriggerResponse(message="local.ch ingestion completed", job_id=job_id)
+
+
+@router.post("/searchch", response_model=IngestionTriggerResponse)
+async def trigger_searchch_ingestion(
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger a search.ch ingestion job."""
+    service = SearchChIngestionService(db)
+    job_id = await service.ingest()
+    return IngestionTriggerResponse(message="search.ch ingestion completed", job_id=job_id)
+
+
+@router.post("/enrich-websites", response_model=dict)
+async def trigger_website_enrichment(
+    batch_size: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    """Scrape company websites to extract email, phone, and contact form info."""
+    scraper = WebsiteScraper(db)
+    try:
+        stats = await scraper.enrich_all(batch_size=batch_size)
+        return {"message": "Website enrichment completed", **stats}
+    finally:
+        await scraper.close()
 
 
 @router.get("/jobs", response_model=list[IngestionJobOut])
