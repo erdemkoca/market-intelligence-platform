@@ -2,7 +2,6 @@ import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import async_session
 from src.services.ingestion.zefix_ingestion import ZefixIngestionService
@@ -16,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 async def run_zefix_ingestion():
-    """Daily Zefix ingestion job."""
+    """Daily LINDAS/Zefix ingestion job."""
     logger.info("Starting scheduled LINDAS/Zefix ingestion...")
     async with async_session() as session:
         try:
@@ -43,10 +42,10 @@ async def run_lead_scoring():
             logger.error(f"Scheduled lead scoring failed: {e}", exc_info=True)
 
 
-def main():
+async def main():
     scheduler = AsyncIOScheduler()
 
-    # Zefix ingestion: daily at 05:00
+    # LINDAS/Zefix ingestion: daily at 05:00
     scheduler.add_job(run_zefix_ingestion, "cron", hour=5, minute=0, id="zefix_daily")
 
     # Lead scoring: daily at 08:00
@@ -56,11 +55,12 @@ def main():
     logger.info("Scheduler started. Jobs: lindas_zefix_daily (05:00), scoring_daily (08:00)")
 
     try:
-        asyncio.get_event_loop().run_forever()
+        while True:
+            await asyncio.sleep(3600)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
         logger.info("Scheduler stopped.")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
