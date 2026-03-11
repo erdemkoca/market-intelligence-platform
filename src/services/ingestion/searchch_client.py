@@ -1,14 +1,21 @@
 import asyncio
 import logging
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-SEARCH_TERMS = ["maler", "gipser", "fassadenbau"]
-RESULTS_PER_PAGE = 12
+SEARCH_TERMS = ["maler", "gipser", "fassadenbau", "verputzer", "stuckateur"]
+
+# Atom/OpenSearch namespaces
+NS = {
+    "atom": "http://www.w3.org/2005/Atom",
+    "os": "http://a9.com/-/spec/opensearchrss/1.0/",
+    "tel": "http://tel.search.ch/api/spec/result/1.0/",
+}
 
 
 @dataclass
@@ -22,30 +29,28 @@ class SearchChCompany:
     website: str | None = None
     email: str | None = None
     categories: list[str] = field(default_factory=list)
+    detail_url: str | None = None
     source_url: str | None = None
     raw: dict = field(default_factory=dict)
 
 
 class SearchChClient:
-    """Scrapes company data from search.ch telephone directory."""
+    """Fetches company data from search.ch public API (Atom/OpenSearch)."""
 
-    BASE_URL = "https://www.search.ch/tel/"
+    API_URL = "https://tel.search.ch/api/"
 
-    def __init__(self, delay: float = 3.0, max_results_per_term: int = 750):
+    def __init__(self, delay: float = 1.0, max_results_per_term: int = 1000):
         self.delay = delay
         self.max_results_per_term = max_results_per_term
         self._client: httpx.AsyncClient | None = None
-        self._retry_delay = 30.0
-        self._max_retries = 3
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=30.0,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "de-CH,de;q=0.9",
+                    "User-Agent": "BaunexMarketIntelligence/1.0",
+                    "Accept": "application/atom+xml",
                 },
                 follow_redirects=True,
             )
@@ -56,11 +61,11 @@ class SearchChClient:
             await self._client.aclose()
 
     async def fetch_all_trades(self) -> list[SearchChCompany]:
-        """Fetch companies for all target trade search terms."""
+        """Fetch companies for all target trade search terms via API."""
         all_companies: dict[str, SearchChCompany] = {}
 
         for term in SEARCH_TERMS:
-            logger.info(f"search.ch: scraping '{term}'...")
+            logger.info(f"search.ch API: fetching '{term}'...")
             companies = await self._fetch_search_term(term)
 
             for company in companies:
@@ -68,7 +73,6 @@ class SearchChClient:
                 if key not in all_companies:
                     all_companies[key] = company
                 else:
-                    # Merge: keep the one with more data
                     existing = all_companies[key]
                     if not existing.phone and company.phone:
                         existing.phone = company.phone
@@ -76,166 +80,142 @@ class SearchChClient:
                         existing.website = company.website
 
             logger.info(
-                f"search.ch: '{term}' yielded {len(companies)} results, "
+                f"search.ch API: '{term}' yielded {len(companies)} results, "
                 f"unique so far: {len(all_companies)}"
             )
 
-        logger.info(f"search.ch: total unique companies: {len(all_companies)}")
+        logger.info(f"search.ch API: total unique companies: {len(all_companies)}")
         return list(all_companies.values())
 
     async def _fetch_search_term(self, term: str) -> list[SearchChCompany]:
-        """Fetch results for a single search term with pagination."""
+        """Fetch all results for a search term using API pagination."""
         companies = []
         pos = 1
+        batch_size = 50  # Max per request
 
         while pos <= self.max_results_per_term:
-            url = f"{self.BASE_URL}?q={term}&pos={pos}"
-            success = False
+            try:
+                client = await self._get_client()
+                response = await client.get(
+                    self.API_URL,
+                    params={"was": term, "maxnum": batch_size, "pos": pos},
+                )
 
-            for retry in range(self._max_retries):
-                try:
-                    client = await self._get_client()
-                    response = await client.get(url)
+                if response.status_code == 429:
+                    logger.warning(f"search.ch API: rate limited, waiting 30s...")
+                    await asyncio.sleep(30)
+                    continue
 
-                    if response.status_code == 429:
-                        wait = self._retry_delay * (retry + 1)
-                        logger.warning(f"search.ch: rate limited, waiting {wait}s (retry {retry + 1})")
-                        await asyncio.sleep(wait)
-                        continue
+                response.raise_for_status()
 
-                    if response.status_code == 404:
-                        return companies
-                    response.raise_for_status()
+                page_companies, total = self._parse_api_response(response.text, term)
 
-                    html = response.text
-                    page_companies = self._parse_search_page(html, url)
-
-                    if not page_companies:
-                        return companies
-
-                    companies.extend(page_companies)
-                    success = True
-
-                    if len(companies) % 100 < RESULTS_PER_PAGE:
-                        logger.info(f"search.ch: '{term}' pos={pos}: {len(companies)} total")
-
+                if not page_companies:
                     break
 
-                except httpx.HTTPStatusError as e:
-                    logger.warning(f"search.ch: HTTP {e.response.status_code} at pos={pos} for '{term}'")
-                    if e.response.status_code == 429:
-                        await asyncio.sleep(self._retry_delay * (retry + 1))
-                        continue
-                    return companies
-                except httpx.RequestError as e:
-                    logger.warning(f"search.ch: request error at pos={pos} for '{term}': {e}")
-                    return companies
+                companies.extend(page_companies)
 
-            if not success:
-                logger.warning(f"search.ch: giving up on pos={pos} for '{term}' after {self._max_retries} retries")
-                return companies
+                if len(companies) % 200 < batch_size:
+                    logger.info(f"search.ch API: '{term}' pos={pos}: {len(companies)}/{total}")
 
-            await asyncio.sleep(self.delay)
-            pos += RESULTS_PER_PAGE
+                # Check if we've fetched all
+                if pos + batch_size > total:
+                    break
+
+                pos += batch_size
+                await asyncio.sleep(self.delay)
+
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"search.ch API: HTTP {e.response.status_code} for '{term}' at pos={pos}")
+                break
+            except httpx.RequestError as e:
+                logger.warning(f"search.ch API: request error for '{term}': {e}")
+                break
 
         return companies
 
-    def _parse_search_page(self, html: str, source_url: str) -> list[SearchChCompany]:
-        """Parse company listings from search.ch HTML."""
+    def _parse_api_response(self, xml_text: str, search_term: str) -> tuple[list[SearchChCompany], int]:
+        """Parse Atom/OpenSearch XML response from search.ch API."""
         companies = []
+        total = 0
 
-        # search.ch uses structured listing blocks
-        # Extract individual result entries
-        # Pattern: company name, address, phone, website in structured blocks
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning(f"search.ch API: XML parse error: {e}")
+            return companies, total
 
-        # Find all tel: links (phone numbers) — these are the most reliable anchors
-        phone_pattern = re.compile(
-            r'href="tel:(\+?[\d\s]+)"',
+        # Get total results
+        total_el = root.find("os:totalResults", NS)
+        if total_el is not None and total_el.text:
+            total = int(total_el.text)
+
+        # Parse entries
+        for entry in root.findall("atom:entry", NS):
+            company = self._parse_entry(entry, search_term)
+            if company:
+                companies.append(company)
+
+        return companies, total
+
+    def _parse_entry(self, entry: ET.Element, search_term: str) -> SearchChCompany | None:
+        """Parse a single Atom entry into a SearchChCompany."""
+        title = entry.find("atom:title", NS)
+        if title is None or not title.text:
+            return None
+
+        name = title.text.strip()
+
+        # Parse content block: "Name\nDescription\nStreet\nPLZ City Canton\nPhone"
+        content = entry.find("atom:content", NS)
+        street = None
+        zip_code = None
+        city = None
+        canton = None
+        phone = None
+
+        if content is not None and content.text:
+            lines = [l.strip() for l in content.text.strip().split("\n") if l.strip()]
+
+            for line in lines:
+                # Phone number (starts with * or +41 or 0)
+                phone_match = re.match(r'^\*?(\+?[\d\s]{10,})', line)
+                if phone_match:
+                    phone = self._normalize_phone(phone_match.group(1))
+                    continue
+
+                # Address: PLZ City Canton
+                addr_match = re.match(r'^(\d{4})\s+(.+?)(?:\s+([A-Z]{2}))?\s*$', line)
+                if addr_match:
+                    zip_code = addr_match.group(1)
+                    city = addr_match.group(2).strip()
+                    canton = addr_match.group(3)
+                    if not canton:
+                        canton = self._plz_to_canton(zip_code)
+                    continue
+
+                # Street (contains number and common street suffixes)
+                if re.search(r'\d', line) and line != name and not re.match(r'^\d{4}\s', line):
+                    street = line
+
+        # Detail URL
+        detail_url = None
+        for link in entry.findall("atom:link", NS):
+            if link.get("rel") == "alternate" and link.get("type") == "text/html":
+                detail_url = link.get("href")
+                break
+
+        return SearchChCompany(
+            name=name,
+            street=street,
+            zip_code=zip_code,
+            city=city,
+            canton=canton,
+            phone=phone,
+            detail_url=detail_url,
+            source_url=f"search.ch:{search_term}",
+            raw={"search_term": search_term, "detail_url": detail_url},
         )
-
-        # Find listing blocks by looking for address patterns near phone numbers
-        # search.ch typically has: Name, Address (street, PLZ city), Phone, Website
-
-        # Strategy: extract structured data from listing blocks
-        # Look for vcard/hcard microformat or similar patterns
-        listing_blocks = re.split(r'<(?:article|div)[^>]*class="[^"]*(?:tel-result|listing|entry)[^"]*"', html)
-
-        if len(listing_blocks) <= 1:
-            # Try alternative split pattern
-            listing_blocks = re.split(r'<h[23][^>]*>\s*<a[^>]*href="/tel/[^"]*"', html)
-
-        # Alternative approach: find all company entries by their detail links
-        # search.ch detail URLs look like: /tel/schaffhausen/scheffmacher-ag
-        detail_links = re.findall(
-            r'<a[^>]*href="(/tel/[^"]+)"[^>]*>\s*([^<]+)</a>',
-            html,
-        )
-
-        # Also extract phone numbers
-        phones = re.findall(r'href="tel:(\+?[0-9\s]+)"', html)
-
-        # Extract addresses: "Street Nr, PLZ City"
-        addresses = re.findall(
-            r'(?:>|\s)([A-ZÄÖÜa-zäöüéèêàâ][a-zäöüéèêàâ\-]+(?:strasse|str\.|weg|gasse|platz|ring|allee|rain|matt|feld|acker|wies|hof|boden|graben|berg|tal|dorf|au|bühl|egg|stein|wald|holz|moos|brunn|bach|wil|ikon|iken|ingen|ikon)\s*\d*\w*)\s*,?\s*(\d{4})\s+([A-ZÄÖÜa-zäöüéèêàâ][A-Za-zÄÖÜäöüéèêàâ\s\-]+?)(?:\s*[A-Z]{2})?\s*(?:<|$)',
-            html,
-        )
-
-        # Extract websites
-        websites = re.findall(
-            r'href="(https?://(?:www\.)?(?!search\.ch|local\.ch|google\.|facebook\.|instagram\.|twitter\.|youtube\.)[a-z0-9\-]+\.[a-z]{2,}[^"]*)"',
-            html,
-            re.IGNORECASE,
-        )
-
-        # Build company entries from detail links (most reliable)
-        seen_names = set()
-        for link_path, name in detail_links:
-            name = name.strip()
-            if not name or len(name) < 3:
-                continue
-            if name.lower() in seen_names:
-                continue
-            # Skip navigation/UI links
-            if any(x in name.lower() for x in ["suche", "filter", "seite", "mehr", "karte", "login"]):
-                continue
-
-            seen_names.add(name.lower())
-
-            company = SearchChCompany(
-                name=name,
-                source_url=source_url,
-                raw={"detail_path": link_path},
-            )
-            companies.append(company)
-
-        # Match phone numbers to companies (by order of appearance)
-        phone_idx = 0
-        for company in companies:
-            if phone_idx < len(phones):
-                phone = phones[phone_idx].strip()
-                if len(phone) >= 10:
-                    company.phone = self._normalize_phone(phone)
-                phone_idx += 1
-
-        # Match addresses to companies
-        addr_idx = 0
-        for company in companies:
-            if addr_idx < len(addresses):
-                street, plz, city = addresses[addr_idx]
-                company.street = street.strip()
-                company.zip_code = plz.strip()
-                company.city = city.strip()
-                company.canton = self._plz_to_canton(plz.strip())
-                addr_idx += 1
-
-        # Match websites to companies
-        web_idx = 0
-        for company in companies:
-            if web_idx < len(websites):
-                company.website = websites[web_idx]
-                web_idx += 1
-
-        return companies
 
     @staticmethod
     def _normalize_phone(phone: str) -> str:
@@ -251,125 +231,32 @@ class SearchChClient:
 
     @staticmethod
     def _plz_to_canton(plz: str) -> str | None:
-        """Map Swiss PLZ ranges to cantons."""
+        """Map Swiss PLZ to canton (simplified major ranges)."""
         try:
             p = int(plz)
         except ValueError:
             return None
 
-        # Major PLZ ranges (simplified)
-        if 1000 <= p <= 1299:
-            return "VD"
-        if 1200 <= p <= 1299:
-            return "GE"
-        if 1300 <= p <= 1399:
-            return "VD"
-        if 1400 <= p <= 1499:
-            return "VD"
-        if 1500 <= p <= 1599:
-            return "FR" if p < 1530 else "VD"
-        if 1600 <= p <= 1699:
-            return "FR" if p < 1690 else "VD"
-        if 1700 <= p <= 1799:
-            return "FR"
-        if 1800 <= p <= 1899:
-            return "VD"
-        if 1900 <= p <= 1999:
-            return "VS"
-        if 2000 <= p <= 2099:
-            return "NE"
-        if 2100 <= p <= 2199:
-            return "NE"
-        if 2300 <= p <= 2399:
-            return "JU" if p < 2365 else "NE"
-        if 2400 <= p <= 2499:
-            return "BE"
-        if 2500 <= p <= 2599:
-            return "BE"
-        if 2600 <= p <= 2699:
-            return "BE"
-        if 2700 <= p <= 2799:
-            return "JU"
-        if 2800 <= p <= 2899:
-            return "JU"
-        if 2900 <= p <= 2999:
-            return "JU"
-        if 3000 <= p <= 3999:
-            return "BE"
-        if 4000 <= p <= 4099:
-            return "BS" if p < 4060 else "BL"
-        if 4100 <= p <= 4199:
-            return "BL"
-        if 4200 <= p <= 4299:
-            return "BL" if p < 4230 else "SO"
-        if 4300 <= p <= 4399:
-            return "BL"
-        if 4400 <= p <= 4499:
-            return "BL"
-        if 4500 <= p <= 4699:
-            return "SO"
-        if 4700 <= p <= 4799:
-            return "SO"
-        if 4800 <= p <= 4899:
-            return "AG"
-        if 4900 <= p <= 4999:
-            return "BE"
-        if 5000 <= p <= 5999:
-            return "AG"
-        if 6000 <= p <= 6099:
-            return "LU"
-        if 6100 <= p <= 6199:
-            return "LU"
-        if 6200 <= p <= 6299:
-            return "LU"
-        if 6300 <= p <= 6399:
-            return "ZG"
-        if 6400 <= p <= 6499:
-            return "SZ"
-        if 6500 <= p <= 6599:
-            return "TI"
-        if 6600 <= p <= 6999:
-            return "TI"
-        if 7000 <= p <= 7599:
-            return "GR"
-        if 7600 <= p <= 7999:
-            return "GR"
-        if 8000 <= p <= 8099:
-            return "ZH"
-        if 8100 <= p <= 8199:
-            return "ZH"
-        if 8200 <= p <= 8299:
-            return "SH" if p < 8260 else "TG" if p < 8280 else "ZH"
-        if 8300 <= p <= 8399:
-            return "ZH" if p < 8355 else "TG"
-        if 8400 <= p <= 8499:
-            return "ZH"
-        if 8500 <= p <= 8599:
-            return "TG"
-        if 8600 <= p <= 8699:
-            return "ZH"
-        if 8700 <= p <= 8799:
-            return "ZH" if p < 8730 else "SZ" if p < 8750 else "GL"
-        if 8800 <= p <= 8899:
-            return "SZ" if p < 8850 else "GL"
-        if 8900 <= p <= 8999:
-            return "AG" if p < 8910 else "ZH" if p < 8960 else "SG" if p < 8970 else "AR"
-        if 9000 <= p <= 9099:
-            return "SG"
-        if 9100 <= p <= 9199:
-            return "AR" if p < 9130 else "AI" if p < 9115 else "SG"
-        if 9200 <= p <= 9299:
-            return "TG" if p < 9250 else "SG"
-        if 9300 <= p <= 9399:
-            return "SG"
-        if 9400 <= p <= 9499:
-            return "SG" if p < 9450 else "AR"
-        if 9500 <= p <= 9599:
-            return "TG" if p < 9560 else "SG"
-        if 9600 <= p <= 9699:
-            return "SG"
-        if 9700 <= p <= 9799:
-            return "SG"
-        if 9800 <= p <= 9899:
-            return "SG"
+        ranges = [
+            (1000, 1199, "VD"), (1200, 1299, "GE"), (1300, 1499, "VD"),
+            (1500, 1529, "FR"), (1530, 1599, "VD"), (1600, 1689, "FR"),
+            (1690, 1699, "VD"), (1700, 1799, "FR"), (1800, 1899, "VD"),
+            (1900, 1999, "VS"), (2000, 2199, "NE"), (2300, 2364, "JU"),
+            (2400, 2699, "BE"), (2700, 2999, "JU"), (3000, 3999, "BE"),
+            (4000, 4059, "BS"), (4060, 4199, "BL"), (4200, 4229, "BL"),
+            (4230, 4299, "SO"), (4300, 4499, "BL"), (4500, 4799, "SO"),
+            (4800, 4899, "AG"), (4900, 4999, "BE"), (5000, 5999, "AG"),
+            (6000, 6299, "LU"), (6300, 6399, "ZG"), (6400, 6499, "SZ"),
+            (6500, 6999, "TI"), (7000, 7999, "GR"), (8000, 8199, "ZH"),
+            (8200, 8259, "SH"), (8260, 8279, "TG"), (8280, 8499, "ZH"),
+            (8500, 8599, "TG"), (8600, 8729, "ZH"), (8730, 8749, "SZ"),
+            (8750, 8899, "GL"), (8900, 8909, "AG"), (8910, 8959, "ZH"),
+            (8960, 8969, "SG"), (8970, 8999, "AR"), (9000, 9099, "SG"),
+            (9100, 9199, "AR"), (9200, 9249, "TG"), (9250, 9399, "SG"),
+            (9400, 9449, "SG"), (9450, 9499, "AR"), (9500, 9559, "TG"),
+            (9560, 9699, "SG"), (9700, 9999, "SG"),
+        ]
+        for low, high, ct in ranges:
+            if low <= p <= high:
+                return ct
         return None
