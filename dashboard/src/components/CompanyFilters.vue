@@ -8,6 +8,8 @@ const props = defineProps<{
     industry: string
     legal_form: string
     status: string
+    has_email: string
+    has_phone: string
   }
 }>()
 
@@ -68,6 +70,14 @@ const legalForms = ['AG', 'GmbH', 'Einzelfirma', 'Genossenschaft', 'Kollektivges
       <option value="ACTIVE">Aktiv</option>
       <option value="LIQUIDATED">Liquidiert</option>
     </select>
+    <label class="checkbox-filter">
+      <input type="checkbox" :checked="local.has_email === 'true'" @change="local.has_email = ($event.target as HTMLInputElement).checked ? 'true' : ''; onSelectChange()" />
+      Mit E-Mail
+    </label>
+    <label class="checkbox-filter">
+      <input type="checkbox" :checked="local.has_phone === 'true'" @change="local.has_phone = ($event.target as HTMLInputElement).checked ? 'true' : ''; onSelectChange()" />
+      Mit Telefon
+    </label>
   </div>
 </template>
 
@@ -100,6 +110,23 @@ select {
   border-radius: 6px;
   font-size: 14px;
   background: white;
+  cursor: pointer;
+}
+
+.checkbox-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: white;
+}
+
+.checkbox-filter input[type="checkbox"] {
   cursor: pointer;
 }
 </style>

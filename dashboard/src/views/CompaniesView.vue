@@ -19,6 +19,8 @@ const filters = ref({
   industry: '',
   legal_form: '',
   status: '',
+  has_email: '',
+  has_phone: '',
 })
 
 async function loadCompanies() {
@@ -30,6 +32,8 @@ async function loadCompanies() {
     if (filters.value.industry) params.industry = filters.value.industry
     if (filters.value.legal_form) params.legal_form = filters.value.legal_form
     if (filters.value.status) params.status = filters.value.status
+    if (filters.value.has_email) params.has_email = filters.value.has_email
+    if (filters.value.has_phone) params.has_phone = filters.value.has_phone
 
     const res = await fetchCompanies(params)
     companies.value = res.items
