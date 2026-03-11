@@ -50,6 +50,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
+    environment:
+      - API_URL=http://api:8000
     volumes:
       - ./dashboard/src:/app/src
       - ./dashboard/index.html:/app/index.html
