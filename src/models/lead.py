@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, Index, Numeric, String, Text, func
+from sqlalchemy import BigInteger, Boolean, Date, ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,7 +11,7 @@ class LeadAccount(Base):
     __tablename__ = "mi_lead_accounts"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    company_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_companies.id", ondelete="CASCADE"), unique=True, nullable=False)
     is_baunex_customer: Mapped[bool] = mapped_column(Boolean, default=False)
     is_baunex_trial: Mapped[bool] = mapped_column(Boolean, default=False)
     had_demo: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -46,8 +46,8 @@ class LeadInteraction(Base):
     __tablename__ = "mi_lead_interactions"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    lead_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    contact_id: Mapped[int | None] = mapped_column(BigInteger)
+    lead_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_lead_accounts.id", ondelete="CASCADE"), nullable=False)
+    contact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("mi_contacts.id"))
     interaction_type: Mapped[str] = mapped_column(String(30), nullable=False)
     direction: Mapped[str | None] = mapped_column(String(10))
     subject: Mapped[str | None] = mapped_column(String(500))

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,9 +29,9 @@ class CampaignRecipient(Base):
     __tablename__ = "mi_campaign_recipients"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    campaign_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    lead_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    contact_id: Mapped[int | None] = mapped_column(BigInteger)
+    campaign_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_campaigns.id", ondelete="CASCADE"), nullable=False)
+    lead_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_lead_accounts.id"), nullable=False)
+    contact_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("mi_contacts.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     sent_at: Mapped[datetime | None] = mapped_column()
     opened_at: Mapped[datetime | None] = mapped_column()

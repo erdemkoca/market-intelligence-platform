@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Date, Index, String, Text, func
+from sqlalchemy import BigInteger, Date, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,7 +11,7 @@ class MiSourceRecord(Base):
     __tablename__ = "mi_source_records"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    company_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_companies.id", ondelete="CASCADE"), nullable=False)
     source_type: Mapped[str] = mapped_column(String(30), nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(1000))
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
@@ -31,7 +31,7 @@ class MiCompanyEvent(Base):
     __tablename__ = "mi_company_events"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    company_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_companies.id", ondelete="CASCADE"), nullable=False)
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
     event_date: Mapped[datetime | None] = mapped_column(Date)
     summary: Mapped[str | None] = mapped_column(Text)

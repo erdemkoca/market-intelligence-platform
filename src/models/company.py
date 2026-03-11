@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Date, Index, Numeric, String, Text, func
+from sqlalchemy import BigInteger, Date, ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,7 +53,7 @@ class MiCompanyIdentifier(Base):
     __tablename__ = "mi_company_identifiers"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    company_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_companies.id", ondelete="CASCADE"), nullable=False)
     identifier_type: Mapped[str] = mapped_column(String(30), nullable=False)
     identifier_value: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
@@ -62,7 +62,6 @@ class MiCompanyIdentifier(Base):
 
     __table_args__ = (
         Index("idx_mi_identifiers_company", "company_id"),
-        {"info": {"unique_constraints": [("identifier_type", "identifier_value")]}},
     )
 
 
@@ -70,7 +69,7 @@ class MiCompanyLocation(Base):
     __tablename__ = "mi_company_locations"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    company_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_companies.id", ondelete="CASCADE"), nullable=False)
     location_type: Mapped[str] = mapped_column(String(20), default="HQ")
     street: Mapped[str | None] = mapped_column(String(300))
     zip_code: Mapped[str | None] = mapped_column(String(10))

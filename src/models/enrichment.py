@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Index, String, func
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,7 +11,7 @@ class MiEnrichment(Base):
     __tablename__ = "mi_enrichments"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    company_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("mi_companies.id", ondelete="CASCADE"), unique=True, nullable=False)
     website: Mapped[str | None] = mapped_column(String(500))
     email_general: Mapped[str | None] = mapped_column(String(300))
     phone: Mapped[str | None] = mapped_column(String(50))
